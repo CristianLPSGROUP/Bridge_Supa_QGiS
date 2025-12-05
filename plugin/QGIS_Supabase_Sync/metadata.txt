@@ -1,0 +1,14 @@
+[general]
+name=QGIS Supabase Sync
+qgisMinimumVersion=3.0
+description=Plugin para sincronizar datos con Supabase usando API REST.
+version=1.0.0
+author=Cristian Báez
+email=cristian@example.com
+about=Plugin para cargar y enviar datos a Supabase.
+category=Vector
+icon=icon.png
+experimental=False
+deprecated=False
+
+
