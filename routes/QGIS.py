@@ -39,7 +39,7 @@ class LayerUploadRequest(BaseModel):
 
 
 ### Routes
-@router.get("/get_layer")
+@router.post("/get_layer")
 async def get_layers(request: LayerQueryRequest, auth_data = Depends(get_authenticated_supabase_client)):
     """
     Lee la geometría cargada en la tabla "QGIS" de Postgres
