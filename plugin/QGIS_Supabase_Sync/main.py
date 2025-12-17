@@ -211,6 +211,9 @@ class QgisSupabaseSyncPlugin:
             QgsProject.instance().addMapLayer(layer)
 
     def cargar_capa(self):
+        
+        self.agregar_mapa_base()
+        
         # Check if user is logged in
         if not self.access_token:
             QMessageBox.warning(None, "Error", "Debes iniciar sesión primero")
@@ -288,7 +291,6 @@ class QgisSupabaseSyncPlugin:
             self.iface.messageBar().pushInfo("Info", "No hay geometrías en esta área")
             return
 
-        self.agregar_mapa_base()
 
         self.capas_api = []
         self.layer = None
@@ -335,8 +337,8 @@ class QgisSupabaseSyncPlugin:
 
             all_keys = sorted({key for f in feature_list for key in f["properties"].keys()})
 
-            # Use the non-deprecated QgsField constructor with typeName
-            prov.addAttributes([QgsField(key, QVariant.String, "String") for key in all_keys])
+            # Use the non-deprecated QgsField constructor (only name and type)
+            prov.addAttributes([QgsField(key, QVariant.String) for key in all_keys])
             mem_layer.updateFields()
 
             feats = []
