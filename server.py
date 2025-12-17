@@ -1,96 +1,52 @@
-# server.py
-import os
-from fastapi import FastAPI
-from datetime import datetime
-from pydantic import BaseModel
-from typing import List, Dict, Any
-import json
+'''
+Server:
+Este archivo ejecuta un entorno con FastAPI similar a la plataforma LPS360
+'''
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from fastapi.staticfiles import StaticFiles
+from supabase import create_client, Client
+import os
+from dotenv import load_dotenv
+from starlette.responses import FileResponse
+from routes import login, QGIS
+from routes.utils.limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+load_dotenv()
+is_development = os.getenv("ENVIRONMENT", "production").lower() == "development"
 
-BBDD_FOLDER = "BBDD"
+app = FastAPI(
+    docs_url="/docs" if is_development else None,
+    redoc_url="/redoc" if is_development else None
+    )
 
-os.makedirs(BBDD_FOLDER, exist_ok=True)
+supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY"))
 
+allowed_origins = ["http://localhost:5173"]
 
-# =====================================================
-#                 MODELOS DE DATOS
-# =====================================================
-class FeatureModel(BaseModel):
-    id: Optional[int] = None
-    geometry: Dict[str, Any]
-    properties: Dict[str, Any]
-
-
-class LayerModel(BaseModel):
-    layer_name: str
-    features: List[FeatureModel]
-
-
-# =====================================================
-#                 CONFIGURACIÓN FASTAPI
-# =====================================================
-app = FastAPI(title="Servidor QGIS-Supabase Sync")
-
-# Habilitar CORS para que QGIS pueda hacer POST desde localhost
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Solo para pruebas, en producción restringir dominios
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(login.router)
+app.include_router(QGIS.router)
 
-# =====================================================
-#                 ENDPOINTS
-# =====================================================
-@app.get("/layer")
-async def get_layers():
-    """
-    Devuelve las capas cargadas (puedes leer de un fichero)
-    """
-    try:
-        with open("BBDD\layers_20251205_125842.json", "r", encoding="utf-8") as f:
-            # with open("layers.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        data = {}  # Si no existe el fichero aún, devolver vacío
-    return data
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Railway"""
+    return {"status": "healthy"}
 
 
-@app.post("/sync")
-async def sync(layers: List[LayerModel]):
-    """
-    Recibe la lista de capas y features editadas desde QGIS
-    y las guarda en un fichero JSON.
-    """
-    # Convertir a dict simple para poder escribir JSON
-    output = []
-    for layer in layers:
-        layer_dict = {"layer_name": layer.layer_name, "features": []}
-        for feat in layer.features:
-            feat_dict = {
-                "id": feat.id,
-                "geometry": feat.geometry,
-                "properties": feat.properties,
-            }
-            layer_dict["features"].append(feat_dict)
-        output.append(layer_dict)
-
-    # Guardar fichero en JSON individual
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"layers_{timestamp}.json"
-    filepath = os.path.join(BBDD_FOLDER, filename)
-
-    # Guardar en fichero JSON
-    # with open("layers.json", "w", encoding="utf-8") as f:
-    #    json.dump(output, f, ensure_ascii=False, indent=2)
-
-    # Guardar en fichero JSON
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
-
-    print(f"Guardado fichero: {filepath}")
-    return {"status": "ok", "message": f"{len(output)} capas guardadas correctamente."}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="localhost", port=8000)

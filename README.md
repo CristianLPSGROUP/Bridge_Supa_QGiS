@@ -53,3 +53,11 @@ Ruta donde alojar el contenido de la carpeta plugin
 ```sh
 C:\Users\usuario\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins
 ```
+
+----
+
+### CAMBIOS: 
+- Entorno: 
+    - creados archivos de UV, para instalar dependencias: uv sync
+
+    - Creado fichero Supabase con datos de migración
