@@ -69,6 +69,15 @@ class QgisSupabaseSyncPlugin:
         self.action_save.triggered.connect(self.guardar_cambios)
         self.iface.addToolBarIcon(self.action_save)
 
+        # Set canvas to EPSG:4326 (WGS84 - standard GPS coordinates)
+        from qgis.core import QgsCoordinateReferenceSystem
+        canvas = self.iface.mapCanvas()
+        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        canvas.setDestinationCrs(target_crs)
+
+        # Add OpenStreetMap base layer by default
+        self.agregar_mapa_base()
+
     def unload(self):
         self.iface.removeToolBarIcon(self.action_login)
         self.iface.removeToolBarIcon(self.action_load)
@@ -190,6 +199,12 @@ class QgisSupabaseSyncPlugin:
     #                          CARGAR CAPAS
     # ================================================================
     def agregar_mapa_base(self):
+        """Add OpenStreetMap base layer if it doesn't exist already"""
+        # Check if OpenStreetMap layer already exists
+        existing_layers = QgsProject.instance().mapLayersByName("OpenStreetMap")
+        if existing_layers:
+            return  # Layer already exists, don't add duplicate
+
         url = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png"
         layer = QgsRasterLayer(url, "OpenStreetMap", "wms")
         if layer.isValid():
@@ -202,10 +217,14 @@ class QgisSupabaseSyncPlugin:
             return
 
         # Importar aquí para evitar error al iniciar QGIS
-        from qgis.core import QgsJsonUtils
+        from qgis.core import QgsJsonUtils, QgsCoordinateReferenceSystem
 
-        # Obtener los extents del mapa actual
+        # Force canvas to EPSG:4326 (WGS84 - standard GPS coordinates)
         canvas = self.iface.mapCanvas()
+        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        canvas.setDestinationCrs(target_crs)
+
+        # Obtener los extents del mapa actual (now in EPSG:4326)
         extent = canvas.extent()
         scale = canvas.scale()
 
@@ -353,14 +372,15 @@ class QgisSupabaseSyncPlugin:
             QMessageBox.warning(None, "Error", "Debes iniciar sesión primero")
             return
 
-        if not self.capas_api:
-            QMessageBox.warning(None, "Error", "Primero carga una capa desde la API.")
+        # Check if there are any vector layers in the project
+        project_layers = list(QgsProject.instance().mapLayers().values())
+        vector_layers = [layer for layer in project_layers if isinstance(layer, QgsVectorLayer)]
+
+        if not vector_layers:
+            QMessageBox.warning(None, "Error", "No hay capas vectoriales para subir.")
             return
 
         try:
-            # Todas las capas visibles en QGIS
-            project_layers = list(QgsProject.instance().mapLayers().values())
-
             total_uploaded = 0
             duplicate_count = 0
             upload_errors = []
