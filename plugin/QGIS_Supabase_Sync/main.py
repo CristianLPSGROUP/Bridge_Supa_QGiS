@@ -1,7 +1,24 @@
+from cProfile import label
+
+# from pyexpat import features
+
+# from tkinter import dialog
+# from urllib import response
 import requests
-from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialog, QVBoxLayout, QLineEdit, QLabel, QPushButton
+from qgis.PyQt.QtWidgets import (
+    QAction,
+    QMessageBox,
+    QDialog,
+    QVBoxLayout,
+    QLineEdit,
+    QLabel,
+    QPushButton,
+)
+
 from PyQt5.QtCore import QVariant
+
 from qgis.core import (
+    QgsCoordinateReferenceSystem,
     QgsVectorLayer,
     QgsFeature,
     QgsProject,
@@ -10,6 +27,27 @@ from qgis.core import (
     QgsWkbTypes,
 )
 import json
+
+
+class ConfirmDialog(QDialog):
+    def __init__(self, message, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirmar Acción")
+        self.setModal(True)
+
+        layout = QVBoxLayout()
+
+        layout.addWidget(QLabel(message))
+
+        self.yes_button = QPushButton("Sí")
+        self.yes_button.clicked.connect(self.accept)
+        layout.addWidget(self.yes_button)
+
+        self.no_button = QPushButton("No")
+        self.no_button.clicked.connect(self.reject)
+        layout.addWidget(self.no_button)
+
+        self.setLayout(layout)
 
 
 class LoginDialog(QDialog):
@@ -39,12 +77,57 @@ class LoginDialog(QDialog):
         layout.addWidget(self.login_button)
 
         self.setLayout(layout)
+        self.user_id = None
+        self.projects = []
+        self.selected_project_id = None
 
     def get_credentials(self):
         return {
             "email": self.email_input.text(),
-            "password": self.password_input.text()
+            "password": self.password_input.text(),
         }
+
+
+class QgisUtils:
+    @staticmethod
+    def establecer_crs_4326():
+        """
+        Establece automáticamente el CRS del proyecto a EPSG:4326
+        """
+        crs_4326 = QgsCoordinateReferenceSystem("EPSG:4326")
+        QgsProject.instance().setCrs(crs_4326)
+
+    @staticmethod
+    def agregar_mapa_base():
+        """
+        Agrega la capa OpenStreetMap solo si no existe ya en el proyecto
+        """
+        # Revisar si ya existe una capa llamada "OpenStreetMap"
+        for layer in QgsProject.instance().mapLayers().values():
+            if layer.name() == "OpenStreetMap":
+                return  # Ya existe, no hacer nada
+
+        url = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        layer = QgsRasterLayer(url, "OpenStreetMap", "wms")
+        if layer.isValid():
+            # Reproyectar a EPSG:4326
+            crs_4326 = QgsCoordinateReferenceSystem("EPSG:4326")
+            layer.setCrs(crs_4326)
+            QgsProject.instance().addMapLayer(layer)
+
+    @staticmethod
+    def limpiar_capas_api(capas_api):
+        """
+        Elimina del proyecto todas las capas cuyos IDs están en capas_api
+        """
+        project = QgsProject.instance()
+
+        for layer_id in capas_api:
+            layer = project.mapLayer(layer_id)
+            if layer:  # solo elimina si la capa existe
+                project.removeMapLayer(layer_id)
+
+        capas_api.clear()
 
 
 class QgisSupabaseSyncPlugin:
@@ -55,6 +138,10 @@ class QgisSupabaseSyncPlugin:
         self.layer = None  # <<< IMPORTANTE
         self.access_token = None
         self.refresh_token = None
+        self.user_id = None
+        # --- PROYECTOS ---
+        self.projects = []
+        self.selected_project_id = None
 
     def initGui(self):
         self.action_login = QAction("Login - Supabase", self.iface.mainWindow())
@@ -69,21 +156,55 @@ class QgisSupabaseSyncPlugin:
         self.action_save.triggered.connect(self.guardar_cambios)
         self.iface.addToolBarIcon(self.action_save)
 
-        # Set canvas to EPSG:4326 (WGS84 - standard GPS coordinates)
-        from qgis.core import QgsCoordinateReferenceSystem
-        canvas = self.iface.mapCanvas()
-        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-        canvas.setDestinationCrs(target_crs)
-
-        # Add OpenStreetMap base layer by default
-        self.agregar_mapa_base()
-
     def unload(self):
         self.iface.removeToolBarIcon(self.action_login)
         self.iface.removeToolBarIcon(self.action_load)
         self.iface.removeToolBarIcon(self.action_save)
 
+    def confirm_action(self, message):
+        dialog = ConfirmDialog(message, self.iface.mainWindow())
+        return dialog.exec_() == QDialog.Accepted
+
+    def mostrar_selector_proyectos(self):
+        from qgis.PyQt.QtWidgets import QComboBox
+
+        dialog = QDialog(self.iface.mainWindow())
+        dialog.setWindowTitle("Seleccionar proyecto")
+
+        layout = QVBoxLayout()
+        label = QLabel("Selecciona el proyecto activo:")
+        combo = QComboBox()
+
+        combo.addItem("Selecciona un proyecto", None)
+
+        for p in self.projects:
+            combo.addItem(p["project_name"], p["project_id"])
+        btn = QPushButton("Aceptar")
+
+        def aceptar():
+            project_id = combo.currentData()
+            if project_id is None:
+                QMessageBox.warning(None, "Error", "Debes seleccionar un proyecto")
+                return
+
+            self.selected_project_id = project_id
+            dialog.accept()
+
+            self.iface.messageBar().pushSuccess(
+                "Proyecto activo", f"Proyecto seleccionado (ID: {project_id})"
+            )
+
+        btn.clicked.connect(aceptar)
+
+        layout.addWidget(label)
+        layout.addWidget(combo)
+        layout.addWidget(btn)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+
     def login(self):
+        QgisUtils.establecer_crs_4326()
         """Show login dialog and authenticate with Supabase"""
         dialog = LoginDialog(self.iface.mainWindow())
 
@@ -91,7 +212,9 @@ class QgisSupabaseSyncPlugin:
             creds = dialog.get_credentials()
 
             if not creds["email"] or not creds["password"]:
-                QMessageBox.warning(None, "Error", "Por favor ingresa email y contraseña")
+                QMessageBox.warning(
+                    None, "Error", "Por favor ingresa email y contraseña"
+                )
                 return
 
             try:
@@ -107,9 +230,25 @@ class QgisSupabaseSyncPlugin:
                     self.refresh_token = response.cookies["refresh_token"]
 
                 data = response.json()
-                user_id = data.get("user_id", "")
 
-                self.iface.messageBar().pushSuccess("Login", f"Autenticado correctamente (User: {user_id})")
+                self.user_id = data.get("user_id")
+                self.projects = data.get("projects", [])
+                self.selected_project_id = None
+
+                # --- MOSTRAR SELECTOR DE PROYECTOS ---
+                if not self.projects:
+                    QMessageBox.warning(
+                        None, "Sin proyectos", "No tienes proyectos asignados"
+                    )
+                    return
+
+                self.iface.messageBar().pushSuccess(
+                    "Login", f"Autenticado correctamente (User: {self.user_id})"
+                )
+
+                QgisUtils.agregar_mapa_base()
+                # self.agregar_mapa_base()
+                self.mostrar_selector_proyectos()
 
             except requests.exceptions.HTTPError as e:
                 if response.status_code == 401:
@@ -117,7 +256,9 @@ class QgisSupabaseSyncPlugin:
                 else:
                     QMessageBox.critical(None, "Error", f"Error HTTP: {e}")
             except Exception as e:
-                QMessageBox.critical(None, "Error", f"No se pudo conectar al servidor: {e}")
+                QMessageBox.critical(
+                    None, "Error", f"No se pudo conectar al servidor: {e}"
+                )
 
     def refresh_access_token(self):
         """Refresh the access token using the refresh token"""
@@ -142,6 +283,7 @@ class QgisSupabaseSyncPlugin:
             return False
 
     def qvariant_to_python(self, value):
+        # Esta función convierte QVariant a tipos nativos de Python
         from qgis.PyQt.QtCore import QVariant
 
         if isinstance(value, QVariant):
@@ -155,29 +297,21 @@ class QgisSupabaseSyncPlugin:
     def serialize_feature(self, feature):
         """
         Serializa una feature de QGIS a dict JSON.
-        No incluye id, created_at, o created_by (manejados por la API/DB)
+        PRESERVA el ID original.
         """
-        geom = None
-        try:
-            geom = json.loads(feature.geometry().asJson())
-        except Exception:
-            geom = None
-
-        props = {}
-        for field in feature.fields():
-            # Ignorar campos manejados por la base de datos
-            if field.name() in ["id", "created_at", "created_by"]:
-                continue
-
-            val = feature.attribute(field.name())
-            props[field.name()] = self.qvariant_to_python(val)
-
-        return {"geometry": geom, "properties": props}
+        geom = json.loads(feature.geometry().asJson())
+        props = {
+            field.name(): self.qvariant_to_python(feature.attribute(field.name()))
+            for field in feature.fields()
+        }
+        feature_id = props.get("id")  # aquí preservamos el id original
+        return {"geometry": geom, "properties": props, "id": feature_id}
 
     def serialize_layer(self, layer):
         """
         Serializa toda la capa a un dict con layer_name y features.
         Solo capas vectoriales.
+        PRESERVA el ID original si existe.
         """
         if not isinstance(layer, QgsVectorLayer):
             return None
@@ -189,7 +323,6 @@ class QgisSupabaseSyncPlugin:
             if feat_dict["geometry"] is None:
                 continue
             layer_data["features"].append(feat_dict)
-
         if not layer_data["features"]:
             return None
 
@@ -198,55 +331,62 @@ class QgisSupabaseSyncPlugin:
     # ================================================================
     #                          CARGAR CAPAS
     # ================================================================
-    def agregar_mapa_base(self):
-        """Add OpenStreetMap base layer if it doesn't exist already"""
-        # Check if OpenStreetMap layer already exists
-        existing_layers = QgsProject.instance().mapLayersByName("OpenStreetMap")
-        if existing_layers:
-            return  # Layer already exists, don't add duplicate
-
-        url = "type=xyz&url=https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-        layer = QgsRasterLayer(url, "OpenStreetMap", "wms")
-        if layer.isValid():
-            QgsProject.instance().addMapLayer(layer)
 
     def cargar_capa(self):
-        
-        self.agregar_mapa_base()
-        
-        # Check if user is logged in
+        QgisUtils.establecer_crs_4326()
+
+        # Limpiar capas existentes de manera segura
+        if hasattr(self, "capas_api") and self.capas_api:
+            if not self.confirm_action(
+                "Se eliminarán las capas actuales. ¿Deseas continuar?"
+            ):
+                return
+        QgisUtils.limpiar_capas_api(self.capas_api)
+        self.layer = None
+
+        # Verificar login
         if not self.access_token:
             QMessageBox.warning(None, "Error", "Debes iniciar sesión primero")
             return
 
-        # Importar aquí para evitar error al iniciar QGIS
-        from qgis.core import QgsJsonUtils, QgsCoordinateReferenceSystem
+        # verificar proyecto seleccionado
+        if not self.selected_project_id:
+            QMessageBox.warning(
+                None, "Error", "Debes seleccionar un proyecto antes de cargar capas"
+            )
+            return
 
-        # Force canvas to EPSG:4326 (WGS84 - standard GPS coordinates)
+        from qgis.core import (
+            QgsJsonUtils,
+            QgsCoordinateTransform,
+            QgsCoordinateReferenceSystem,
+        )
+
+        # Obtener extents del mapa actual y transformarlos a EPSG:4326
         canvas = self.iface.mapCanvas()
-        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
-        canvas.setDestinationCrs(target_crs)
-
-        # Obtener los extents del mapa actual (now in EPSG:4326)
         extent = canvas.extent()
         scale = canvas.scale()
+        source_crs = canvas.mapSettings().destinationCrs()
+        target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+        transform = QgsCoordinateTransform(
+            source_crs, target_crs, QgsProject.instance()
+        )
+        extent_4326 = transform.transformBoundingBox(extent)
 
-        # Preparar el payload con los extents
         payload = {
+            "project_id": self.selected_project_id,
             "extents": {
-                "xMin": extent.xMinimum(),
-                "xMax": extent.xMaximum(),
-                "yMin": extent.yMinimum(),
-                "yMax": extent.yMaximum(),
+                "xMin": extent_4326.xMinimum(),
+                "xMax": extent_4326.xMaximum(),
+                "yMin": extent_4326.yMinimum(),
+                "yMax": extent_4326.yMaximum(),
                 "crs": "EPSG:4326",
                 "zoom": scale,
-                "max_zoom_out": 100000  # Ajusta este valor según necesites
-            }
+                "max_zoom_out": 1e9,
+            },
         }
 
         url = "http://127.0.0.1:8000/api/qgis/get_layer"
-
-        # Prepare cookies with both tokens
         cookies = {}
         if self.access_token:
             cookies["access_token"] = self.access_token
@@ -256,42 +396,19 @@ class QgisSupabaseSyncPlugin:
         try:
             response = requests.post(url, json=payload, cookies=cookies)
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            if response.status_code == 401:
-                # Try to refresh token and retry
-                if self.refresh_access_token():
-                    cookies["access_token"] = self.access_token
-                    cookies["refresh_token"] = self.refresh_token
-                    try:
-                        response = requests.post(url, json=payload, cookies=cookies)
-                        response.raise_for_status()
-                    except Exception as retry_error:
-                        self.iface.messageBar().pushCritical("Error", "Sesión expirada. Por favor inicia sesión de nuevo")
-                        return
-                else:
-                    self.iface.messageBar().pushCritical("Error", "Sesión expirada. Por favor inicia sesión de nuevo")
-                    return
-            elif response.status_code == 400:
-                error_data = response.json()
-                detail = error_data.get("detail", {})
-                message = detail.get("message", "Por favor acércate más al mapa")
-                self.iface.messageBar().pushWarning("Zoom muy alejado", message)
-                return
-            else:
-                self.iface.messageBar().pushCritical("Error", f"Error HTTP: {e}")
-                return
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             self.iface.messageBar().pushCritical("Error", f"No se pudo conectar: {e}")
             return
 
         response_data = response.json()
         features = response_data.get("features", [])
-
         if not features:
             self.iface.messageBar().pushInfo("Info", "No hay geometrías en esta área")
             return
 
+        QgisUtils.agregar_mapa_base()
 
+        # Inicializar lista de IDs de capas
         self.capas_api = []
         self.layer = None
 
@@ -301,26 +418,12 @@ class QgisSupabaseSyncPlugin:
             geom = feat.get("geometry")
             if not geom:
                 continue
-
             geom_type = geom.get("type", "Unknown")
-            if geom_type not in features_by_type:
-                features_by_type[geom_type] = []
+            features_by_type.setdefault(geom_type, []).append(feat)
 
-            # Convertir formato de BD a formato esperado
-            features_by_type[geom_type].append({
-                "id": feat.get("id"),
-                "geometry": geom,
-                "properties": {
-                    "id": feat.get("id"),
-                    "created_at": feat.get("created_at"),
-                    "created_by": feat.get("created_by")
-                }
-            })
-
-        # Crear una capa por cada tipo de geometría
+        # Crear capa por tipo de geometría
         for geom_type, feature_list in features_by_type.items():
             layer_name = f"QGIS_{geom_type}"
-
             if geom_type in ["Point", "MultiPoint"]:
                 qgis_geom_type = "Point"
             elif geom_type in ["LineString", "MultiLineString"]:
@@ -329,35 +432,50 @@ class QgisSupabaseSyncPlugin:
                 qgis_geom_type = "Polygon"
             else:
                 qgis_geom_type = "Unknown"
-
+            # --- Crear capa de memoria ---
             mem_layer = QgsVectorLayer(
                 f"{qgis_geom_type}?crs=EPSG:4326", layer_name, "memory"
             )
             prov = mem_layer.dataProvider()
 
-            all_keys = sorted({key for f in feature_list for key in f["properties"].keys()})
-
-            # Use the non-deprecated QgsField constructor (only name and type)
+            # Recolectar todos los atributos, asegurando que 'id' esté presente
+            all_keys = sorted(
+                set("id").union(
+                    {
+                        key
+                        for f in feature_list
+                        for key in f.get("properties", {}).keys()
+                    }
+                )
+            )
             prov.addAttributes([QgsField(key, QVariant.String) for key in all_keys])
             mem_layer.updateFields()
 
             feats = []
             for feat in feature_list:
                 f = QgsFeature()
-
-                geom = QgsJsonUtils.geometryFromGeoJson(json.dumps(feat["geometry"]))
-                f.setGeometry(geom)
-
-                attr_list = [feat["properties"].get(key, "") for key in all_keys]
+                # Geometría
+                geom_obj = QgsJsonUtils.geometryFromGeoJson(
+                    json.dumps(feat.get("geometry"))
+                )
+                f.setGeometry(geom_obj)
+                # Atributos, incluyendo id de BD
+                attr_list = [
+                    (
+                        feat.get("properties", {}).get(key, "")
+                        if key != "id"
+                        else str(feat.get("id", ""))
+                    )
+                    for key in all_keys
+                ]
                 f.setAttributes(attr_list)
-
                 feats.append(f)
 
             prov.addFeatures(feats)
             mem_layer.updateExtents()
 
             QgsProject.instance().addMapLayer(mem_layer)
-            self.capas_api.append(mem_layer)
+            self.capas_api.append(mem_layer.id())
 
             if self.layer is None:
                 self.layer = mem_layer
@@ -369,101 +487,78 @@ class QgisSupabaseSyncPlugin:
     # ================================================================
 
     def guardar_cambios(self):
-        # Check if user is logged in
+        # Verificar que el usuario esté logueado
         if not self.access_token:
             QMessageBox.warning(None, "Error", "Debes iniciar sesión primero")
             return
 
-        # Check if there are any vector layers in the project
-        project_layers = list(QgsProject.instance().mapLayers().values())
-        vector_layers = [layer for layer in project_layers if isinstance(layer, QgsVectorLayer)]
-
-        if not vector_layers:
-            QMessageBox.warning(None, "Error", "No hay capas vectoriales para subir.")
-            return
-
         try:
-            total_uploaded = 0
-            duplicate_count = 0
-            upload_errors = []
+            # Recolectar todas las capas vectoriales con geometría
+            layers_to_upload = [
+                layer
+                for layer in QgsProject.instance().mapLayers().values()
+                if isinstance(layer, QgsVectorLayer)
+                and QgsWkbTypes.geometryType(layer.wkbType())
+                != QgsWkbTypes.UnknownGeometry
+                and layer.featureCount() > 0
+            ]
 
-            for layer in project_layers:
-                # --- FILTRAR SOLO CAPAS VECTORIALES ---
-                if not isinstance(layer, QgsVectorLayer):
-                    print(f"Ignorando capa no vectorial: {layer.name()}")
-                    continue
+            if not layers_to_upload:
+                QMessageBox.information(
+                    None, "Info", "No hay capas vectoriales con geometrías para enviar."
+                )
+                return
 
-                # Ignorar capas sin geometría válida
-                if (
-                    QgsWkbTypes.geometryType(layer.wkbType())
-                    == QgsWkbTypes.UnknownGeometry
-                ):
-                    print(f"Ignorando capa sin geometría válida: {layer.name()}")
-                    continue
+            # Preparar cookies
+            cookies = {}
+            if self.access_token:
+                cookies["access_token"] = self.access_token
+            if self.refresh_token:
+                cookies["refresh_token"] = self.refresh_token
 
-                # Serializar la capa completa
+            url = "http://127.0.0.1:8000/api/qgis/upload_geometries"
+
+            total_inserted = 0
+
+            for layer in layers_to_upload:
                 layer_data = self.serialize_layer(layer)
-
                 if not layer_data or not layer_data.get("features"):
-                    print(f"Capa sin features válidas: {layer.name()}")
                     continue
 
-                # Preparar cookies para autenticación
-                cookies = {}
-                if self.access_token:
-                    cookies["access_token"] = self.access_token
-                if self.refresh_token:
-                    cookies["refresh_token"] = self.refresh_token
-
-                # URL del nuevo endpoint
-                url = "http://127.0.0.1:8000/api/qgis/upload_geometries"
+                payload = {
+                    "project_id": self.selected_project_id,  # <- aquí va el project_id seleccionado
+                    "features": layer_data["features"],
+                }
 
                 try:
-                    # Enviar la capa al servidor
-                    response = requests.post(url, json=layer_data, cookies=cookies)
+                    response = requests.post(url, json=payload, cookies=cookies)
                     response.raise_for_status()
-
                     result = response.json()
-                    total_uploaded += result.get("inserted", 0)
-                    duplicate_count += result.get("duplicates", 0)
-
-                    if result.get("errors"):
-                        upload_errors.extend(result["errors"])
-
+                    total_inserted += result.get("inserted", 0)
                 except requests.exceptions.HTTPError as e:
-                    if response.status_code == 401:
-                        # Try to refresh token and retry
-                        if self.refresh_access_token():
-                            cookies["access_token"] = self.access_token
-                            cookies["refresh_token"] = self.refresh_token
-                            try:
-                                response = requests.post(url, json=layer_data, cookies=cookies)
-                                response.raise_for_status()
-
-                                result = response.json()
-                                total_uploaded += result.get("inserted", 0)
-                                duplicate_count += result.get("duplicates", 0)
-
-                                if result.get("errors"):
-                                    upload_errors.extend(result["errors"])
-                            except Exception:
-                                QMessageBox.critical(None, "Error", "Sesión expirada. Por favor inicia sesión de nuevo")
-                                return
-                        else:
-                            QMessageBox.critical(None, "Error", "Sesión expirada. Por favor inicia sesión de nuevo")
-                            return
+                    # Intentar refrescar token en caso de 401
+                    if response.status_code == 401 and self.refresh_access_token():
+                        cookies["access_token"] = self.access_token
+                        cookies["refresh_token"] = self.refresh_token
+                        response = requests.post(url, json=layer_data, cookies=cookies)
+                        response.raise_for_status()
+                        result = response.json()
+                        total_inserted += result.get("inserted", 0)
                     else:
-                        upload_errors.append(f"Error en capa {layer.name()}: {str(e)}")
+                        QMessageBox.critical(
+                            None,
+                            "Error",
+                            f"No se pudo enviar la capa {layer.name()}: {e}",
+                        )
                         continue
 
-            # Mostrar resumen de la operación
-            message = f"Geometrías insertadas: {total_uploaded}"
-            if duplicate_count > 0:
-                message += f"\nDuplicadas (ignoradas): {duplicate_count}"
-            if upload_errors:
-                message += f"\n\nErrores encontrados: {len(upload_errors)}"
-
-            QMessageBox.information(None, "Éxito", message)
+            # Mostrar el mensaje directamente desde el servidor
+            if total_inserted == 0:
+                QMessageBox.information(None, "Info", "No hay nuevos cambios")
+            else:
+                QMessageBox.information(
+                    None, "Éxito", "Se grabaron los datos correctamente"
+                )
 
         except Exception as e:
             QMessageBox.critical(None, "Error", f"Error al enviar: {str(e)}")
