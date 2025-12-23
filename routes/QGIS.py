@@ -35,6 +35,7 @@ class FeatureModel(BaseModel):
 
 
 class LayerQueryRequest(BaseModel):
+    project_id: int
     extents: Extents
 
 
@@ -117,7 +118,9 @@ async def get_layers(
 ):
     supabase, user_id = auth_data
     extents = request.extents
+    project_id = request.project_id
     print(extents)
+    print("Project ID:", project_id)
 
     if extents.zoom and extents.zoom > extents.max_zoom_out:
         raise HTTPException(
@@ -143,6 +146,7 @@ async def get_layers(
                     "y_max": extents.yMax,
                     "srid": srid,
                     "user_id": str(user_id),
+                    "project_id": project_id,
                 },
             ).execute()
         )
@@ -176,14 +180,17 @@ async def upload_geometries(
     request: LayerUploadRequest, auth_data=Depends(get_authenticated_supabase_client)
 ):
     """
-    Sube geometrías a la tabla QGIS de Postgres usando RPC function
-    - id: auto-generado por la base de datos
-    - created_at: timestamp automático
-    - created_by: del usuario autenticado
-    - Usa ST_GeomFromGeoJSON para convertir correctamente el GeoJSON a PostGIS geometry
+    Sube geometrías a la tabla QGIS de Postgres usando RPC function.
+    Solo cuenta insertados nuevos.
     """
     supabase, user_id = auth_data
-
+    print(f"request:-----------||n{request.model_dump_json()}")
+    # Verificar project_id
+    project_id = getattr(request, "project_id", None)
+    if project_id is None:
+        raise HTTPException(
+            status_code=400, detail="No se proporcionó project_id para las geometrías"
+        )
     if not request.features:
         raise HTTPException(
             status_code=400, detail="No se proporcionaron features para subir"
@@ -191,52 +198,43 @@ async def upload_geometries(
 
     try:
         inserted_count = 0
-        duplicate_count = 0
         errors = []
 
-        print(f"Subiendo {len(request.features)} features para el usuario {user_id}")
         for feature in request.features:
-            try:
-                print(f"Subiendo feature con geometría: {feature.geometry}")
+            props = feature.properties or {}
+            feature_id = props.get("id")
 
-                print(f"Geom JSON string: {feature.geometry}")
-                # Usar RPC function para insertar correctamente con PostGIS
+            # Insertar solo si no tiene id
+            if feature_id not in (None, "", "NULL"):
+                continue
+
+            try:
+                geom_json = feature.geometry
                 response = await asyncio.to_thread(
                     lambda: supabase.rpc(
                         "insert_geometry",
-                        {"geom_json": feature.geometry, "user_id": str(user_id)},
+                        {
+                            "geom_json": geom_json,
+                            "user_id": str(user_id),
+                            "project_id": project_id,
+                        },
                     ).execute()
                 )
-                print("|----------------------------------------------------|")
-                print("RPC raw response:", response)
-                print("RPC data:", response.data)
-                print("RPC error:", response.error)
 
+                # Normalizar respuesta a lista
+                data_list = []
                 if response.data:
-                    result = (
-                        response.data
-                        if isinstance(response.data, dict)
-                        else response.data[0]
-                    )
+                    if isinstance(response.data, list):
+                        data_list = response.data
+                    elif isinstance(response.data, dict):
+                        data_list = [response.data]
 
-                    if result.get("success"):
-                        code = result.get("code")
-                        if code == "OK_INSERT":
+                    # Contar solo insertados
+                    for row in data_list:
+                        if row.get("code") == "OK_INSERT":
                             inserted_count += 1
-                        elif code == "OK_DUPLICATE":
-                            duplicate_count += 1
-                    else:
-                        errors.append(
-                            {
-                                "error": result.get("message", "Unknown error"),
-                                "geometry_type": feature.geometry.get(
-                                    "type", "unknown"
-                                ),
-                                "code": result.get("code", "ERROR_GENERIC"),
-                            }
-                        )
-            except Exception as feat_error:
 
+            except Exception as feat_error:
                 errors.append(
                     {
                         "error": str(feat_error),
@@ -247,9 +245,12 @@ async def upload_geometries(
 
         return {
             "success": True,
-            "message": f"Procesado correctamente",
             "inserted": inserted_count,
-            "duplicates": duplicate_count,
+            "message": (
+                "Se grabaron los datos correctamente"
+                if inserted_count > 0
+                else "No hay nuevos cambios"
+            ),
             "errors": errors if errors else None,
         }
 

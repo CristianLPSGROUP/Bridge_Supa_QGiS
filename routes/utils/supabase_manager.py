@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, Cookie
 from typing import Annotated
 import jwt
+from datetime import datetime
 
 load_dotenv()
 
@@ -18,11 +19,14 @@ supabase_client: Client = create_client(
     SUPABASE_ANON_KEY,
 )
 
+
 async def get_authenticated_supabase_client(
     access_token: Annotated[str | None, Cookie()] = None,
-    refresh_token: Annotated[str | None, Cookie()] = None
+    refresh_token: Annotated[str | None, Cookie()] = None,
 ) -> tuple[Client, str]:
-    print(f"Auth check - access_token present: {bool(access_token)}, refresh_token present: {bool(refresh_token)}")
+    print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Auth check - access_token present: {bool(access_token)}, refresh_token present: {bool(refresh_token)}"
+    )
 
     if not access_token:
         print("No access token in cookies")
@@ -34,7 +38,9 @@ async def get_authenticated_supabase_client(
         if not user_id:
             print("No user_id in token payload")
             raise HTTPException(status_code=401, detail="Invalid token")
-        print(f"Successfully authenticated user: {user_id}")
+        print(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Successfully authenticated user: {user_id}"
+        )
     except jwt.DecodeError as e:
         print(f"JWT decode error: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
