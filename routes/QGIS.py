@@ -1,15 +1,14 @@
 from urllib import response
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 import json
 from supabase_auth.errors import AuthApiError
 from .utils.limiter import limiter
 from .utils.supabase_manager import supabase_client, get_authenticated_supabase_client
 import asyncio
-from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import List, Dict, Any
-from typing import Optional
+from typing import List, Dict, Any, Optional
+
 
 load_dotenv()
 
@@ -35,7 +34,6 @@ class FeatureModel(BaseModel):
 
 
 class LayerQueryRequest(BaseModel):
-    project_id: int
     extents: Extents
 
 
@@ -118,9 +116,7 @@ async def get_layers(
 ):
     supabase, user_id = auth_data
     extents = request.extents
-    project_id = request.project_id
     print(extents)
-    print("Project ID:", project_id)
 
     if extents.zoom and extents.zoom > extents.max_zoom_out:
         raise HTTPException(
@@ -146,7 +142,6 @@ async def get_layers(
                     "y_max": extents.yMax,
                     "srid": srid,
                     "user_id": str(user_id),
-                    "project_id": project_id,
                 },
             ).execute()
         )

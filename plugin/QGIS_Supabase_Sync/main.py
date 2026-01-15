@@ -148,6 +148,12 @@ class QgisSupabaseSyncPlugin:
         self.action_login.triggered.connect(self.login)
         self.iface.addToolBarIcon(self.action_login)
 
+        self.action_select_project = QAction(
+            "Seleccionar proyecto", self.iface.mainWindow()
+        )
+        self.action_select_project.triggered.connect(self.mostrar_selector_proyectos)
+        self.iface.addToolBarIcon(self.action_select_project)
+
         self.action_load = QAction("Cargar capa desde API", self.iface.mainWindow())
         self.action_load.triggered.connect(self.cargar_capa)
         self.iface.addToolBarIcon(self.action_load)
@@ -168,6 +174,16 @@ class QgisSupabaseSyncPlugin:
     def mostrar_selector_proyectos(self):
         from qgis.PyQt.QtWidgets import QComboBox
 
+        if not self.user_id:
+            QMessageBox.warning(None, "Error", "Debes iniciar sesión primero")
+            return
+
+        if not self.projects:
+            QMessageBox.information(
+                None, "Info", "No hay proyectos disponibles para este usuario"
+            )
+            return
+
         dialog = QDialog(self.iface.mainWindow())
         dialog.setWindowTitle("Seleccionar proyecto")
 
@@ -176,9 +192,9 @@ class QgisSupabaseSyncPlugin:
         combo = QComboBox()
 
         combo.addItem("Selecciona un proyecto", None)
-
         for p in self.projects:
             combo.addItem(p["project_name"], p["project_id"])
+
         btn = QPushButton("Aceptar")
 
         def aceptar():
@@ -190,8 +206,8 @@ class QgisSupabaseSyncPlugin:
             self.selected_project_id = project_id
             dialog.accept()
 
-            self.iface.messageBar().pushSuccess(
-                "Proyecto activo", f"Proyecto seleccionado (ID: {project_id})"
+            self.iface.messageBar().pushInfo(
+                "Proyecto (demo)", f"Proyecto seleccionado (ID: {project_id})"
             )
 
         btn.clicked.connect(aceptar)
@@ -248,7 +264,6 @@ class QgisSupabaseSyncPlugin:
 
                 QgisUtils.agregar_mapa_base()
                 # self.agregar_mapa_base()
-                self.mostrar_selector_proyectos()
 
             except requests.exceptions.HTTPError as e:
                 if response.status_code == 401:
@@ -350,11 +365,11 @@ class QgisSupabaseSyncPlugin:
             return
 
         # verificar proyecto seleccionado
-        if not self.selected_project_id:
-            QMessageBox.warning(
-                None, "Error", "Debes seleccionar un proyecto antes de cargar capas"
-            )
-            return
+        # if not self.selected_project_id:
+        #    QMessageBox.warning(
+        #        None, "Error", "Debes seleccionar un proyecto antes de cargar capas"
+        #    )
+        #    return
 
         from qgis.core import (
             QgsJsonUtils,
@@ -374,7 +389,6 @@ class QgisSupabaseSyncPlugin:
         extent_4326 = transform.transformBoundingBox(extent)
 
         payload = {
-            "project_id": self.selected_project_id,
             "extents": {
                 "xMin": extent_4326.xMinimum(),
                 "xMax": extent_4326.xMaximum(),
