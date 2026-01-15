@@ -64,7 +64,7 @@ C:\Users\usuario\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins
 
 ### Funcionalidades en SUPABASE
 - Función para recoger los proyectos en base al usuario logueado  <<get_projects_by_user>>
-
+```sh
  select
         p.id as project_id,
         p.name as project_name
@@ -74,10 +74,10 @@ C:\Users\usuario\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins
     where
         uc.user_id = p_user_id
         and p.deleted_at is null;
-
+```
 - Función que recoge poligonos en base a coordenadas
 <<get_geometries_in_extent>>
-
+```sh
 BEGIN
     RETURN QUERY
     SELECT
@@ -92,10 +92,10 @@ BEGIN
         ST_MakeEnvelope(x_min, y_min, x_max, y_max, srid)
     );
 END;
-
+```
 - Función que recoge las geometrias en GEOJSON unicamente para comprobar datos en FASTAPI
 <<get_all_qgis_geometries>>
-
+```sh
 begin
     return query
     select
@@ -105,10 +105,10 @@ begin
         q.created_by
     from public."QGIS" q;
 end;
-
+```
 - Función que inserta geometrias en supabase
 <<insert_geometry>>
-
+```sh
 declare
     geom geometry;
     new_id bigint;
@@ -140,4 +140,4 @@ exception
             'sqlstate', sqlstate
         );
 end;
-
+```
